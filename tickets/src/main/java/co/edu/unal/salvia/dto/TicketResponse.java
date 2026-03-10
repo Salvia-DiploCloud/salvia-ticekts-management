@@ -12,9 +12,14 @@ public class TicketResponse {
     private UUID id;
     private String title;
     private String description;
-    private TicketCategory category;
-    private TicketPriority priority;
+    private String category;
+    private String priority;
     private TicketStatus status;
+    private UUID patientId;
     private UUID createdBy;
+    private UUID assignedTo;         // NUEVO
     private LocalDateTime createdAt;
+    private LocalDateTime updatedAt; // NUEVO
+    private LocalDateTime resolvedAt;// NUEVO
+    private LocalDateTime closedAt;  // NUEVO
 }

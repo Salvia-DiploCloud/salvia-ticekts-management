@@ -1,24 +1,23 @@
 package co.edu.unal.salvia.dto;
 
-import lombok.AllArgsConstructor;
 import lombok.Data;
-import lombok.NoArgsConstructor;
-
 import java.time.LocalDateTime;
 import java.util.UUID;
 import com.fasterxml.jackson.annotation.JsonFormat;
 
 @Data
-@NoArgsConstructor
-@AllArgsConstructor
-public class TicketCreatedEvent {
+public class CommentResponse {
+    private UUID id;
     private UUID ticketId;
-    private String title;
-    private String status;
-    private UUID patientId;
-
-
-    // ... dentro de la clase:
+    private String body;
+    private UserRef author;
+    
     @JsonFormat(shape = JsonFormat.Shape.STRING, pattern = "yyyy-MM-dd'T'HH:mm:ss")
     private LocalDateTime createdAt;
+
+    @Data
+    public static class UserRef {
+        private UUID id;
+        // Más adelante puedes agregar firstName, lastName, role, etc.
+    }
 }
