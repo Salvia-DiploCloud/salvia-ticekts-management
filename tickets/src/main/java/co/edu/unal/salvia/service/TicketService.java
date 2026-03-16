@@ -315,14 +315,13 @@ public class TicketService {
         }).collect(Collectors.toList());
     }
 
-    
 // --- MAGIA DE COGNITO ---
     // Este método saca el correo directamente del Token JWT que envió el usuario
     private String getCurrentUserEmail() {
         Authentication auth = SecurityContextHolder.getContext().getAuthentication();
-        if (auth != null && auth.getPrincipal() instanceof Jwt) {
-            Jwt jwt = (Jwt) auth.getPrincipal();
-            return jwt.getClaimAsString("email"); // Extraemos el claim 'email' del JSON del token
+        if (auth != null && auth.getPrincipal() instanceof Jwt jwt) {
+            String email = jwt.getClaimAsString("email"); // Extraemos el claim 'email' del JSON del token
+            if (email != null && !email.isBlank()) return email;
         }
         return "usuario@pendiente.com"; // Fallback por si acaso
     }
