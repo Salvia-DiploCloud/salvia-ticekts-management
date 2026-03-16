@@ -34,6 +34,14 @@ import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.PageRequest;
 
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.jwt.Jwt;
+import java.time.ZoneOffset;
+import java.time.format.DateTimeFormatter;
+import java.util.Collections;
+import java.util.List;
+
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.UUID;
@@ -82,7 +90,7 @@ public class TicketService {
                 savedTicket.getPatientId(),
                 savedTicket.getCreatedAt()
         );
-        dispatchKafkaEvent(savedTicket, "TicketCreated");
+        dispatchTicketCreatedEvent(savedTicket);
 
         // Le pasamos savedTicket.getId() y el Enum HistoryAction.CREATED
         recordHistory(savedTicket.getId(), HistoryAction.CREATED, null, null, savedTicket.getStatus().name(), savedTicket.getCreatedBy());
@@ -139,6 +147,35 @@ public class TicketService {
     }
 
     // NUEVO: Método para actualizar el estado de un ticket
+    public TicketResponse updateTicket(UUID ticketId, UpdateTicketRequest request) {
+        Ticket ticket = ticketRepository.findById(ticketId)
+                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Ticket no encontrado"));
+
+        List<String> updatedFields = new java.util.ArrayList<>();
+
+        if (request.getTitle() != null && !request.getTitle().equals(ticket.getTitle())) {
+            recordHistory(ticket.getId(), co.edu.unal.salvia.model.HistoryAction.UPDATED, "title", ticket.getTitle(), request.getTitle(), UUID.randomUUID());
+            ticket.setTitle(request.getTitle());
+            updatedFields.add("title");
+        }
+        if (request.getDescription() != null && !request.getDescription().equals(ticket.getDescription())) {
+            recordHistory(ticket.getId(), co.edu.unal.salvia.model.HistoryAction.UPDATED, "description", ticket.getDescription(), request.getDescription(), UUID.randomUUID());
+            ticket.setDescription(request.getDescription());
+            updatedFields.add("description");
+        }
+
+        ticket.setUpdatedAt(LocalDateTime.now());
+        Ticket updatedTicket = ticketRepository.save(ticket);
+
+        // Si se actualizó al menos un campo, disparamos el evento
+        if (!updatedFields.isEmpty()) {
+            dispatchTicketUpdatedEvent(updatedTicket, updatedFields);
+        }
+
+        return mapToResponse(updatedTicket);
+    }
+
+    // MÉTODO RESTAURADO: Actualizar el estado de un ticket
     public TicketResponse updateTicketStatus(UUID id, co.edu.unal.salvia.dto.UpdateTicketStatusRequest request) {
         // 1. Buscamos el ticket en la BD
         Ticket ticket = ticketRepository.findById(id)
@@ -146,15 +183,14 @@ public class TicketService {
 
         // 2. Actualizamos el estado si viene en la petición
         if (request.getStatus() != null) {
-            ticket.setStatus(request.getStatus());
-
             // Guardar el historial antes de cambiar el estado
             recordHistory(ticket.getId(), HistoryAction.STATUS_CHANGED, "status", ticket.getStatus().name(), request.getStatus().name(), UUID.randomUUID());
+            ticket.setStatus(request.getStatus());
             
             // Lógica de negocio: Guardar la fecha exacta en la que se resuelve o cierra
-            if (request.getStatus() == TicketStatus.RESOLVED) {
+            if (request.getStatus() == co.edu.unal.salvia.model.TicketStatus.RESOLVED) {
                 ticket.setResolvedAt(LocalDateTime.now());
-            } else if (request.getStatus() == TicketStatus.CLOSED) {
+            } else if (request.getStatus() == co.edu.unal.salvia.model.TicketStatus.CLOSED) {
                 ticket.setClosedAt(LocalDateTime.now());
             }
         }
@@ -167,14 +203,16 @@ public class TicketService {
         // 4. Actualizamos la fecha de modificación general
         ticket.setUpdatedAt(LocalDateTime.now());
 
-        // 5. Guardamos en BD y retornamos usando nuestro método auxiliar
+        // 5. Guardamos en BD
         Ticket updatedTicket = ticketRepository.save(ticket);
 
+        // 6. ¡Lógica de Kafka actualizada con Cognito!
         if (request.getStatus() == co.edu.unal.salvia.model.TicketStatus.CLOSED) {
-            dispatchKafkaEvent(updatedTicket, "TicketClosed");
+            dispatchTicketClosedEvent(updatedTicket, getCurrentUserEmail());
         } else {
-            dispatchKafkaEvent(updatedTicket, "TicketUpdated");
+            dispatchTicketUpdatedEvent(updatedTicket, List.of("status", "assignedTo"));
         }
+        
         return mapToResponse(updatedTicket);
     }
 
@@ -277,44 +315,70 @@ public class TicketService {
         }).collect(Collectors.toList());
     }
 
+    
+// --- MAGIA DE COGNITO ---
+    // Este método saca el correo directamente del Token JWT que envió el usuario
+    private String getCurrentUserEmail() {
+        Authentication auth = SecurityContextHolder.getContext().getAuthentication();
+        if (auth != null && auth.getPrincipal() instanceof Jwt) {
+            Jwt jwt = (Jwt) auth.getPrincipal();
+            return jwt.getClaimAsString("email"); // Extraemos el claim 'email' del JSON del token
+        }
+        return "usuario@pendiente.com"; // Fallback por si acaso
+    }
 
-    private void dispatchKafkaEvent(Ticket ticket, String eventType) {
-        TicketKafkaEvent.TicketPayload payload = new TicketKafkaEvent.TicketPayload(
-                ticket.getId(),
-                ticket.getPatientId(),
-                ticket.getTitle(),
-                ticket.getStatus().name()
-        );
+    // Formateador de fecha exacto como lo pidió Python (Ej: 2026-03-15T12:00:00Z)
+    private String getFormattedTimestamp(LocalDateTime date) {
+        if (date == null) date = LocalDateTime.now();
+        return date.atOffset(ZoneOffset.UTC).format(DateTimeFormatter.ISO_INSTANT);
+    }
+
+    // --- LOS 3 NUEVOS MÉTODOS DE ENVÍO ---
+
+    private void dispatchTicketCreatedEvent(Ticket ticket) {
+        String timestamp = getFormattedTimestamp(ticket.getCreatedAt());
         
-        TicketKafkaEvent event = new TicketKafkaEvent(eventType, payload);
-        ticketEventProducer.publishEvent(event); // Usamos el nuevo método de tu productor
+        TicketKafkaEvent.CreatedPayload payload = new TicketKafkaEvent.CreatedPayload(
+                ticket.getId().toString(),
+                ticket.getPatientId(),
+                getCurrentUserEmail(),
+                ticket.getTitle(),
+                ticket.getDescription(),
+                timestamp
+        );
+        TicketKafkaEvent event = new TicketKafkaEvent("TicketCreated", timestamp, payload);
+        ticketEventProducer.publishEvent(event);
     }
 
-
-    // MÉTODO 1: Actualizar datos generales del ticket (PUT)
-    public TicketResponse updateTicket(UUID ticketId, UpdateTicketRequest request) {
-        Ticket ticket = ticketRepository.findById(ticketId)
-                .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "Ticket no encontrado"));
-
-        // Verificamos qué campos cambiaron para guardar en el historial
-        if (request.getTitle() != null && !request.getTitle().equals(ticket.getTitle())) {
-            recordHistory(ticket.getId(), co.edu.unal.salvia.model.HistoryAction.UPDATED, "title", ticket.getTitle(), request.getTitle(), UUID.randomUUID());
-            ticket.setTitle(request.getTitle());
-        }
-        if (request.getDescription() != null && !request.getDescription().equals(ticket.getDescription())) {
-            recordHistory(ticket.getId(), co.edu.unal.salvia.model.HistoryAction.UPDATED, "description", ticket.getDescription(), request.getDescription(), UUID.randomUUID());
-            ticket.setDescription(request.getDescription());
-        }
-        // ... (Aquí puedes agregar la misma lógica para category y priority si lo deseas)
-
-        ticket.setUpdatedAt(LocalDateTime.now());
-        Ticket updatedTicket = ticketRepository.save(ticket);
-
-        // ¡Avisamos a Python que hubo una actualización!
-        dispatchKafkaEvent(updatedTicket, "TicketUpdated");
-
-        return mapToResponse(updatedTicket);
+    private void dispatchTicketUpdatedEvent(Ticket ticket, List<String> updatedFields) {
+        String timestamp = getFormattedTimestamp(ticket.getUpdatedAt());
+        
+        TicketKafkaEvent.UpdatedPayload payload = new TicketKafkaEvent.UpdatedPayload(
+                ticket.getId().toString(),
+                ticket.getPatientId(),
+                getCurrentUserEmail(),
+                ticket.getTitle(),
+                updatedFields,
+                timestamp
+        );
+        TicketKafkaEvent event = new TicketKafkaEvent("TicketUpdated", timestamp, payload);
+        ticketEventProducer.publishEvent(event);
     }
+
+    private void dispatchTicketClosedEvent(Ticket ticket, String closedBy) {
+        String timestamp = getFormattedTimestamp(ticket.getClosedAt());
+        
+        TicketKafkaEvent.ClosedPayload payload = new TicketKafkaEvent.ClosedPayload(
+                ticket.getId().toString(),
+                ticket.getPatientId(),
+                getCurrentUserEmail(),
+                closedBy,
+                timestamp
+        );
+        TicketKafkaEvent event = new TicketKafkaEvent("TicketClosed", timestamp, payload);
+        ticketEventProducer.publishEvent(event);
+    }
+
 
     // MÉTODO 2: Asignar el ticket a un médico o admin (PATCH /assign)
     public TicketResponse assignTicket(UUID ticketId, AssignTicketRequest request) {
@@ -336,7 +400,7 @@ public class TicketService {
         Ticket updatedTicket = ticketRepository.save(ticket);
 
         // Le avisamos a Python que hubo un cambio importante
-        dispatchKafkaEvent(updatedTicket, "TicketUpdated");
+        dispatchTicketUpdatedEvent(updatedTicket, List.of("assignedTo", "status"));
 
         return mapToResponse(updatedTicket);
     }

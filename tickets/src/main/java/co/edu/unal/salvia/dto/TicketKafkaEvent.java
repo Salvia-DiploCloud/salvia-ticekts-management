@@ -3,6 +3,7 @@ package co.edu.unal.salvia.dto;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
+import java.util.List;
 import java.util.UUID;
 
 @Data
@@ -10,21 +11,45 @@ import java.util.UUID;
 @AllArgsConstructor
 public class TicketKafkaEvent {
     
-    // Aquí enviaremos "TicketCreated", "TicketUpdated" o "TicketClosed"
     private String eventType; 
-    
-    // Aquí va la información del ticket que el Python necesita leer
-    private TicketPayload payload;
+    private String timestamp; // El nuevo campo general que pidió tu compañero
+    private Object payload;   // Lo dejamos como Object para que reciba cualquiera de las 3 plantillas
 
-    // Clase estática para estructurar el objeto "payload" en el JSON
+    // Plantilla 1: Para cuando se CREA el ticket
     @Data
     @NoArgsConstructor
     @AllArgsConstructor
-    public static class TicketPayload {
-        private UUID ticketId;
+    public static class CreatedPayload {
+        private String ticketId;
         private UUID patientId;
+        private String patientEmail;
         private String title;
-        // Agregamos el status por si tu compañero lo necesita en el futuro
-        private String status; 
+        private String description;
+        private String createdAt;
+    }
+
+    // Plantilla 2: Para cuando se ACTUALIZA el ticket
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class UpdatedPayload {
+        private String ticketId;
+        private UUID patientId;
+        private String patientEmail;
+        private String title;
+        private List<String> updatedFields;
+        private String updatedAt;
+    }
+
+    // Plantilla 3: Para cuando se CIERRA el ticket
+    @Data
+    @NoArgsConstructor
+    @AllArgsConstructor
+    public static class ClosedPayload {
+        private String ticketId;
+        private UUID patientId;
+        private String patientEmail;
+        private String closedBy;
+        private String closedAt;
     }
 }

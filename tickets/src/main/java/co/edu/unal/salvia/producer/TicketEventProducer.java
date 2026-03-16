@@ -16,9 +16,18 @@ public class TicketEventProducer {
 
     // Un único método maestro para enviar cualquier evento de tickets
     public void publishEvent(TicketKafkaEvent event) {
-        // Usamos el ticketId que viene dentro del payload como llave (key) para Kafka
-        String key = event.getPayload().getTicketId().toString();
-        
+        String key = "default-key";
+        Object payload = event.getPayload();
+
+        // Verificamos cuál de las 3 plantillas es para extraer el ID correctamente
+        if (payload instanceof TicketKafkaEvent.CreatedPayload p) {
+            key = p.getTicketId();
+        } else if (payload instanceof TicketKafkaEvent.UpdatedPayload p) {
+            key = p.getTicketId();
+        } else if (payload instanceof TicketKafkaEvent.ClosedPayload p) {
+            key = p.getTicketId();
+        }
+
         kafkaTemplate.send(TOPIC, key, event);
         
         System.out.println("Enviando a Python 🐍 -> [" + event.getEventType() + "] Ticket ID: " + key);
